@@ -1,6 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Search, Activity, Users, Pencil, Trash2, X, CalendarCheck2, Loader2, Phone, MessageSquare, Mail, Coffee, Send, MoreHorizontal, ArrowLeft, Undo2, ArrowUpDown, ChevronDown, Bell, BellOff } from "lucide-react";
+import { Plus, Search, Activity, Users, Pencil, Trash2, X, CalendarCheck2, Loader2, Phone, MessageSquare, Mail, Coffee, Send, MoreHorizontal, ArrowLeft, Undo2, ArrowUpDown, ChevronDown, Bell, BellOff, User, LogOut, Cloud, CloudOff } from "lucide-react";
+import { isConnectedMode } from "./sync/supabase";
+import { getCurrentUser, onAuthChange, signOut as syncSignOut, syncBoth, pull as syncPull, notifyMutated, notifyDeleted } from "./sync/engine";
+import { AuthDialog } from "./components/AuthDialog";
 
 // Storage shim: in Claude artifacts, window.storage is provided. In a standalone
 // deployment (PWA, web), fall back to localStorage with the same async API.
@@ -120,29 +123,62 @@ const SORT_OPTIONS = [
   { value: "cadence", label: "Cadence (shortest)" },
 ];
 
-// Starter list — added when user taps "Import starter list" once.
-const STARTER_CONTACTS = [
-  { name: "Jaime",           cadenceDays: 1,  priority: 1, tags: ["intimate"] },
-  { name: "Pali",            cadenceDays: 1,  priority: 1, tags: ["intimate"] },
-  { name: "Beatrice",        cadenceDays: 2,  priority: 1, tags: ["friends"] },
-  { name: "Matija",          cadenceDays: 2,  priority: 1, tags: ["friends"] },
-  { name: "Vinny",           cadenceDays: 21, priority: 3, tags: ["casual-friends"] },
-  { name: "Kader",           cadenceDays: 21, priority: 3, tags: ["casual-friends"] },
-  { name: "Chris D",         cadenceDays: 21, priority: 3, tags: ["casual-friends"] },
-  { name: "Nicole",          cadenceDays: 30, priority: 2, tags: ["family-adjacent"] },
-  { name: "Cari",            cadenceDays: 30, priority: 2, tags: ["family-adjacent"] },
-  { name: "Brian Tully",     cadenceDays: 30, priority: 2, tags: ["family-adjacent"] },
-  { name: "Brian's son",     cadenceDays: 30, priority: 2, tags: ["family-adjacent"] },
-  { name: "Richard Guerra",  cadenceDays: 30, priority: 2, tags: ["family-adjacent"] },
-  { name: "Perla",           cadenceDays: 30, priority: 2, tags: ["family-adjacent"] },
-  { name: "Tim Denning",     cadenceDays: 90, priority: 3, tags: ["friend-adjacent-dormant", "needs-rewarming"] },
-  { name: "Robert Morris",   cadenceDays: 60, priority: 2, tags: ["friend-adjacent-aspirational"] },
-  { name: "Mary Gregoire",   cadenceDays: 60, priority: 2, tags: ["friend-adjacent-aspirational"] },
-  { name: "Samuel Headrick", cadenceDays: 60, priority: 2, tags: ["friend-adjacent-aspirational"] },
-  { name: "David Marusek",   cadenceDays: 60, priority: 2, tags: ["friend-adjacent-aspirational"] },
-  { name: "Alex Mathers",    cadenceDays: 60, priority: 2, tags: ["friend-adjacent-aspirational"] },
-  { name: "Zak Bos",         cadenceDays: 7,  priority: 2, tags: ["mentor"] },
+// Walkthrough content for first-time users
+const ONBOARDING_STEPS = [
+  {
+    title: "Welcome to Hiagin",
+    bullets: [
+      "Track who you want to stay in touch with",
+      "Set how often you want to reach out (daily, weekly, monthly...)",
+      "Cards turn yellow → orange → red as people get overdue",
+      "Tap \"Contacted\" with one tap to log a check-in",
+      "Or tap \"Log…\" to record what you talked about",
+    ],
+  },
 ];
+
+// Example placeholder shown in the import textarea — illustrates format only
+const IMPORT_EXAMPLE = `Mom, weekly, family
+Best friend, weekly, friends
+Mentor, monthly, work
+Old college roommate, quarterly, friends`;
+
+// Parse free-form import text. One contact per line. Format:
+//   Name, cadence, [tag1 tag2...]
+// Cadence accepts: number (days), "daily", "weekly", "biweekly", "monthly", "quarterly", "yearly"
+function parseImportText(text) {
+  const cadenceMap = {
+    daily: 1, weekly: 7, biweekly: 14, fortnightly: 14,
+    monthly: 30, quarterly: 90, yearly: 365, annually: 365,
+  };
+  const out = [];
+  const errors = [];
+  text.split("\n").forEach((rawLine, i) => {
+    const line = rawLine.trim();
+    if (!line) return;
+    const parts = line.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length < 2) {
+      errors.push(`Line ${i + 1}: needs at least name and cadence (e.g. "Mom, weekly")`);
+      return;
+    }
+    const [name, cadenceRaw, ...tagParts] = parts;
+    let cadenceDays;
+    const lower = cadenceRaw.toLowerCase();
+    if (cadenceMap[lower] !== undefined) {
+      cadenceDays = cadenceMap[lower];
+    } else {
+      const n = parseInt(cadenceRaw, 10);
+      if (!isNaN(n) && n > 0) cadenceDays = n;
+    }
+    if (!cadenceDays) {
+      errors.push(`Line ${i + 1}: couldn't read cadence "${cadenceRaw}" (try a number of days, or daily/weekly/monthly/quarterly/yearly)`);
+      return;
+    }
+    const tags = tagParts.flatMap((t) => t.split(/\s+/)).filter(Boolean);
+    out.push({ name, cadenceDays, tags, priority: 2 });
+  });
+  return { contacts: out, errors };
+}
 
 const HEAT_ORDER = ["red", "orange", "yellow", "green"];
 const HEAT_LABELS = { red: "Critical", orange: "Overdue", yellow: "Warning", green: "On Track" };
@@ -868,6 +904,130 @@ function ContactDetailView({ contact, interactions, onClose, onEdit, onLog, onMa
   );
 }
 
+function OnboardingDialog({ open, onClose, onImport, contactsCount }) {
+  const [step, setStep] = useState("tour"); // "tour" | "import"
+  const [importText, setImportText] = useState("");
+  const [parseErrors, setParseErrors] = useState([]);
+  const [pending, setPending] = useState(false);
+  const mouseDownOnBackdrop = useRef(false);
+
+  useEffect(() => {
+    if (open) {
+      setStep("tour");
+      setImportText("");
+      setParseErrors([]);
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  const handleImportSubmit = async () => {
+    const { contacts, errors } = parseImportText(importText);
+    if (errors.length > 0) {
+      setParseErrors(errors);
+      return;
+    }
+    if (contacts.length === 0) {
+      setParseErrors(["Add at least one contact before importing."]);
+      return;
+    }
+    setPending(true);
+    try {
+      await onImport(contacts);
+      onClose();
+    } finally {
+      setPending(false);
+    }
+  };
+
+  const tour = ONBOARDING_STEPS[0];
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && mouseDownOnBackdrop.current) onClose(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        {step === "tour" ? (
+          <div className="p-6 space-y-5">
+            <div>
+              <h2 className="text-2xl font-bold text-zinc-900">{tour.title}</h2>
+              <p className="text-sm text-zinc-500 mt-1">A quick tour. Skip anytime.</p>
+            </div>
+            <ul className="space-y-3">
+              {tour.bullets.map((b, i) => (
+                <li key={i} className="flex gap-3">
+                  <span className="shrink-0 w-6 h-6 rounded-full bg-zinc-900 text-white text-xs font-bold inline-flex items-center justify-center mt-0.5">
+                    {i + 1}
+                  </span>
+                  <span className="text-sm text-zinc-700 leading-relaxed">{b}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-between gap-2 pt-2">
+              <button onClick={onClose} className="px-4 h-11 rounded-xl text-zinc-500 hover:bg-zinc-100 font-semibold transition">
+                Skip
+              </button>
+              <button onClick={() => setStep("import")} className="px-5 h-11 rounded-xl bg-zinc-900 text-white hover:bg-zinc-800 font-semibold transition">
+                Next: Add contacts
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="p-6 space-y-5">
+            <div>
+              <h2 className="text-2xl font-bold text-zinc-900">Add your people</h2>
+              <p className="text-sm text-zinc-500 mt-1">Paste a quick list or skip and add them one at a time.</p>
+            </div>
+            <div className="space-y-2">
+              <div className="text-xs text-zinc-500 font-medium">Format: <span className="font-mono">Name, cadence, tags</span></div>
+              <div className="text-xs text-zinc-500">
+                Cadence can be a number (days) or one of: <span className="font-mono">daily</span>, <span className="font-mono">weekly</span>, <span className="font-mono">biweekly</span>, <span className="font-mono">monthly</span>, <span className="font-mono">quarterly</span>, <span className="font-mono">yearly</span>. Tags are optional.
+              </div>
+              <textarea
+                value={importText}
+                onChange={(e) => { setImportText(e.target.value); setParseErrors([]); }}
+                placeholder={IMPORT_EXAMPLE}
+                rows={8}
+                disabled={pending}
+                className="w-full p-3 rounded-md border border-zinc-300 focus:ring-2 focus:ring-zinc-900 focus:outline-none font-mono text-sm resize-none"
+              />
+              {parseErrors.length > 0 && (
+                <div className="bg-rose-50 border border-rose-200 rounded-md p-3 space-y-1">
+                  {parseErrors.map((err, i) => (
+                    <div key={i} className="text-sm text-rose-700">{err}</div>
+                  ))}
+                </div>
+              )}
+              {contactsCount > 0 && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-2.5">
+                  You already have {contactsCount} contact{contactsCount === 1 ? "" : "s"}. Imports will be added to your list, not replace it.
+                </div>
+              )}
+            </div>
+            <div className="flex justify-between gap-2 pt-2">
+              <button onClick={() => setStep("tour")} disabled={pending} className="px-4 h-11 rounded-xl text-zinc-500 hover:bg-zinc-100 font-semibold transition inline-flex items-center">
+                <ArrowLeft className="w-4 h-4 mr-1" />
+                Back
+              </button>
+              <div className="flex gap-2">
+                <button onClick={onClose} disabled={pending} className="px-4 h-11 rounded-xl text-zinc-500 hover:bg-zinc-100 font-semibold transition">
+                  Skip
+                </button>
+                <button onClick={handleImportSubmit} disabled={pending || !importText.trim()} className="px-5 h-11 rounded-xl bg-zinc-900 text-white hover:bg-zinc-800 font-semibold inline-flex items-center transition disabled:opacity-50">
+                  {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Import
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ----- App -----
 
 export default function App() {
@@ -887,6 +1047,11 @@ export default function App() {
   const [undo, setUndo] = useState(null); // { contactId, prevDate, interactionId, name, expiresAt }
   const [collapsedCategories, setCollapsedCategories] = useState(new Set());
   const [notifyEnabled, setNotifyEnabled] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
+  const [syncStatus, setSyncStatus] = useState("idle"); // "idle" | "syncing" | "error"
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const searchRef = useRef(null);
 
   // Initial load (or seed)
@@ -941,8 +1106,50 @@ export default function App() {
         // Fire daily notification on app open
         if (notifyOn) maybeNotifyOverdue(loaded);
       }
+
+      // Auth + initial sync (no-op if not in connected mode)
+      if (isConnectedMode) {
+        try {
+          const u = await getCurrentUser();
+          if (mounted) setAuthUser(u);
+          if (u) {
+            setSyncStatus("syncing");
+            const merged = await syncBoth();
+            if (mounted && merged) {
+              setContacts(merged.contacts);
+              setInteractions(merged.interactions);
+            }
+            if (mounted) setSyncStatus("idle");
+          }
+        } catch (e) {
+          console.warn("Initial sync failed:", e);
+          if (mounted) setSyncStatus("error");
+        }
+      }
     })();
     return () => { mounted = false; };
+  }, []);
+
+  // Subscribe to auth state changes (sign in / sign out from another tab, etc.)
+  useEffect(() => {
+    if (!isConnectedMode) return;
+    const unsub = onAuthChange(async (user) => {
+      setAuthUser(user);
+      if (user) {
+        setSyncStatus("syncing");
+        try {
+          const merged = await syncBoth();
+          if (merged) {
+            setContacts(merged.contacts);
+            setInteractions(merged.interactions);
+          }
+          setSyncStatus("idle");
+        } catch {
+          setSyncStatus("error");
+        }
+      }
+    });
+    return unsub;
   }, []);
 
   const enableNotifications = async () => {
@@ -982,11 +1189,13 @@ export default function App() {
   const persist = useCallback(async (next) => {
     setContacts(next);
     try { await window.storage.set(STORAGE_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
+    notifyMutated();
   }, []);
 
   const persistInteractions = useCallback(async (next) => {
     setInteractions(next);
     try { await window.storage.set(INTERACTIONS_KEY, JSON.stringify(next)); } catch (e) { console.error(e); }
+    notifyMutated();
   }, []);
 
   // Keyboard shortcuts
@@ -1128,6 +1337,8 @@ export default function App() {
     const nextInteractions = interactions.filter((i) => i.id !== undo.interactionId);
     await persist(nextContacts);
     await persistInteractions(nextInteractions);
+    // Replicate the interaction deletion remotely
+    notifyDeleted("interactions", undo.interactionId);
     setUndo(null);
   };
 
@@ -1140,9 +1351,13 @@ export default function App() {
 
   const handleDelete = async () => {
     if (!confirmDelete) return;
+    const deletedId = confirmDelete.id;
+    const droppedInteractions = interactions.filter((i) => i.contactId === deletedId);
     // Cascade: drop interactions for the deleted contact too
-    await persist(contacts.filter((c) => c.id !== confirmDelete.id));
-    await persistInteractions(interactions.filter((i) => i.contactId !== confirmDelete.id));
+    await persist(contacts.filter((c) => c.id !== deletedId));
+    await persistInteractions(interactions.filter((i) => i.contactId !== deletedId));
+    notifyDeleted("contacts", deletedId);
+    droppedInteractions.forEach((i) => notifyDeleted("interactions", i.id));
     setConfirmDelete(null);
   };
 
@@ -1150,19 +1365,26 @@ export default function App() {
     await logInteractionInternal(c, payload);
   };
 
-  const handleImport = async () => {
+  const handleImport = async (newContacts) => {
     const now = new Date().toISOString();
-    const additions = STARTER_CONTACTS.map((c) => ({
+    const additions = newContacts.map((c) => ({
       id: newId(),
       name: c.name,
       cadenceDays: c.cadenceDays,
-      priority: c.priority,
-      tags: c.tags,
+      priority: c.priority ?? 2,
+      tags: c.tags || [],
       lastContactedDate: null,
       createdAt: now,
       updatedAt: now,
     }));
-    await persist([...contacts, ...additions]);
+    await persist([...(contacts || []), ...additions]);
+    try { await window.storage.set(IMPORT_KEY, "1"); } catch {}
+    setImportDone(true);
+  };
+
+  const handleOnboardingClose = async () => {
+    setOnboardingOpen(false);
+    // Mark onboarding as dismissed even if they skipped, so the prompt doesn't keep nagging
     try { await window.storage.set(IMPORT_KEY, "1"); } catch {}
     setImportDone(true);
   };
@@ -1185,6 +1407,57 @@ export default function App() {
               </div>
             </div>
             <div className="flex items-center gap-2 sm:w-auto w-full">
+              {isConnectedMode && (
+                <div className="relative shrink-0">
+                  <button
+                    onClick={() => {
+                      if (authUser) setAccountMenuOpen((o) => !o);
+                      else setAuthOpen(true);
+                    }}
+                    className={`h-11 w-11 rounded-full inline-flex items-center justify-center shadow-md transition active:scale-[0.98] ${
+                      authUser
+                        ? "bg-zinc-900 text-white hover:bg-zinc-800"
+                        : "bg-white text-zinc-700 border border-zinc-300 hover:bg-zinc-50"
+                    }`}
+                    title={authUser ? `Signed in as ${authUser.email}` : "Sign in to sync"}
+                    aria-label="Account"
+                  >
+                    {syncStatus === "syncing" ? <Loader2 className="w-5 h-5 animate-spin" />
+                      : authUser ? <Cloud className="w-5 h-5" />
+                      : <CloudOff className="w-5 h-5" />}
+                  </button>
+                  {accountMenuOpen && authUser && (
+                    <div className="absolute right-0 mt-2 w-56 bg-white border border-zinc-200 rounded-xl shadow-2xl py-1 z-30">
+                      <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-100 truncate">
+                        {authUser.email}
+                      </div>
+                      <button
+                        onClick={async () => {
+                          setAccountMenuOpen(false);
+                          setSyncStatus("syncing");
+                          try {
+                            const merged = await syncBoth();
+                            if (merged) { setContacts(merged.contacts); setInteractions(merged.interactions); }
+                            setSyncStatus("idle");
+                          } catch { setSyncStatus("error"); }
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 inline-flex items-center gap-2"
+                      >
+                        <Cloud className="w-4 h-4" /> Sync now
+                      </button>
+                      <button
+                        onClick={async () => {
+                          setAccountMenuOpen(false);
+                          await syncSignOut();
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-rose-600 hover:bg-rose-50 inline-flex items-center gap-2"
+                      >
+                        <LogOut className="w-4 h-4" /> Sign out
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
               <button
                 onClick={notifyEnabled ? disableNotifications : enableNotifications}
                 className={`h-11 w-11 rounded-full inline-flex items-center justify-center shadow-md transition active:scale-[0.98] shrink-0 ${
@@ -1254,11 +1527,11 @@ export default function App() {
                 initial={{ opacity: 0, y: -8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, height: 0 }}
-                onClick={handleImport}
+                onClick={() => setOnboardingOpen(true)}
                 className="w-full px-4 py-3 rounded-xl bg-zinc-900 text-white font-semibold hover:bg-zinc-800 inline-flex items-center justify-center gap-2 transition active:scale-[0.98] shadow-md"
               >
-                <Plus className="w-4 h-4" />
-                Import starter list (+20 contacts)
+                <Activity className="w-4 h-4" />
+                First-time setup (optional)
               </motion.button>
             )}
           </AnimatePresence>
@@ -1437,6 +1710,15 @@ export default function App() {
         onClose={() => setLogForContact(null)}
         onSubmit={handleLogInteraction}
       />
+
+      <OnboardingDialog
+        open={onboardingOpen}
+        onClose={handleOnboardingClose}
+        onImport={handleImport}
+        contactsCount={contacts?.length || 0}
+      />
+
+      <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
 
       {/* Undo toast */}
       <AnimatePresence>
