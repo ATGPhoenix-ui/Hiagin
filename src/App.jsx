@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Search, Activity, Users, Pencil, Trash2, X, CalendarCheck2, Loader2, Phone, MessageSquare, Mail, Coffee, Send, MoreHorizontal, ArrowLeft, Undo2, ArrowUpDown, ChevronDown, Bell, BellOff, User, LogOut, Cloud, CloudOff } from "lucide-react";
+import { Plus, Search, Activity, Users, Pencil, Trash2, X, CalendarCheck2, Loader2, Phone, MessageSquare, Mail, Coffee, Send, MoreHorizontal, ArrowLeft, ArrowRight, Undo2, ArrowUpDown, ChevronDown, Bell, BellOff, User, LogOut, Cloud, CloudOff, AlertCircle } from "lucide-react";
 import { isConnectedMode } from "./sync/supabase";
 import { getCurrentUser, onAuthChange, signOut as syncSignOut, syncBoth, pull as syncPull, notifyMutated, notifyDeleted } from "./sync/engine";
 import { AuthDialog } from "./components/AuthDialog";
+import { LandingSignIn } from "./components/LandingSignIn";
 
 // Storage shim: in Claude artifacts, window.storage is provided. In a standalone
 // deployment (PWA, web), fall back to localStorage with the same async API.
@@ -123,23 +124,18 @@ const SORT_OPTIONS = [
   { value: "cadence", label: "Cadence (shortest)" },
 ];
 
-// Walkthrough content for first-time users
-const ONBOARDING_STEPS = [
-  {
-    title: "Welcome to Hiagin",
-    bullets: [
-      "Track who you want to stay in touch with",
-      "Set how often you want to reach out (daily, weekly, monthly...)",
-      "Cards turn yellow → orange → red as people get overdue",
-      "Tap \"Contacted\" with one tap to log a check-in",
-      "Or tap \"Log…\" to record what you talked about",
-    ],
-  },
+// Walkthrough bullets shown alongside a sample card so the heat colors are visible
+const ONBOARDING_BULLETS = [
+  "Add the people you want to stay in touch with",
+  "Set how often — daily, weekly, monthly, whatever feels right",
+  "Cards heat up as people get overdue",
+  "One tap to log a check-in, or add a note for what you talked about",
+  "Sync across all your devices when you sign in",
 ];
 
 // Example placeholder shown in the import textarea — illustrates format only
-const IMPORT_EXAMPLE = `Mom, weekly, family
-Best friend, weekly, friends
+const IMPORT_EXAMPLE = `Best friend, weekly, friends
+Sister, biweekly, family
 Mentor, monthly, work
 Old college roommate, quarterly, friends`;
 
@@ -158,7 +154,7 @@ function parseImportText(text) {
     if (!line) return;
     const parts = line.split(",").map((p) => p.trim()).filter(Boolean);
     if (parts.length < 2) {
-      errors.push(`Line ${i + 1}: needs at least name and cadence (e.g. "Mom, weekly")`);
+      errors.push(`Line ${i + 1}: needs at least name and cadence (e.g. "Sam, weekly")`);
       return;
     }
     const [name, cadenceRaw, ...tagParts] = parts;
@@ -245,27 +241,6 @@ function newId() {
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function daysAgoISO(n) {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function makeSeed() {
-  return [
-    { name: "Mom", cadenceDays: 7, lastContactedDate: daysAgoISO(2), tags: ["family"], priority: 1 },
-    { name: "Best friend from college", cadenceDays: 30, lastContactedDate: daysAgoISO(45), tags: ["close-friends"], priority: 1 },
-    { name: "Old coworker", cadenceDays: 90, lastContactedDate: daysAgoISO(120), tags: ["work", "network"], priority: 3 },
-    { name: "Cousin Sam", cadenceDays: 60, lastContactedDate: daysAgoISO(15), tags: ["family"], priority: 2 },
-    { name: "Mentor", cadenceDays: 45, lastContactedDate: null, tags: ["work", "mentor"], priority: 2 },
-  ].map((c) => ({
-    id: newId(),
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...c,
-  }));
 }
 
 // ----- Sub-components -----
@@ -904,7 +879,33 @@ function ContactDetailView({ contact, interactions, onClose, onEdit, onLog, onMa
   );
 }
 
-function OnboardingDialog({ open, onClose, onImport, contactsCount }) {
+// Mini sample card for the tour — shows what an actual card looks like,
+// in this case a yellow/warning state, so the heat-colors concept lands visually.
+function TourSampleCard() {
+  return (
+    <div className="bg-zinc-50 rounded-xl p-4 border border-zinc-200 relative overflow-hidden">
+      <div className="absolute top-0 left-0 right-0 h-1 bg-amber-400" />
+      <div className="flex justify-between items-start">
+        <div>
+          <div className="font-bold text-zinc-900">Best friend</div>
+          <div className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-700 font-medium inline-block mt-1">family</div>
+        </div>
+        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-semibold border bg-amber-50 text-amber-700 border-amber-200">
+          warning
+        </span>
+      </div>
+      <div className="flex justify-between items-end mt-3">
+        <div className="text-lg font-bold text-amber-600">9 <span className="text-xs text-zinc-500 font-medium">days</span></div>
+        <div className="text-[10px] text-zinc-500">Target: weekly</div>
+      </div>
+      <div className="h-1.5 w-full rounded-full overflow-hidden bg-amber-100 mt-2">
+        <div className="h-full rounded-full bg-amber-400" style={{ width: "75%" }} />
+      </div>
+    </div>
+  );
+}
+
+function OnboardingDialog({ open, onClose, onAddFirstContact, onImport, contactsCount }) {
   const [step, setStep] = useState("tour"); // "tour" | "import"
   const [importText, setImportText] = useState("");
   const [parseErrors, setParseErrors] = useState([]);
@@ -940,7 +941,10 @@ function OnboardingDialog({ open, onClose, onImport, contactsCount }) {
     }
   };
 
-  const tour = ONBOARDING_STEPS[0];
+  const startAddingOne = () => {
+    onClose();
+    setTimeout(() => onAddFirstContact?.(), 100);
+  };
 
   return (
     <div
@@ -952,33 +956,41 @@ function OnboardingDialog({ open, onClose, onImport, contactsCount }) {
         {step === "tour" ? (
           <div className="p-6 space-y-5">
             <div>
-              <h2 className="text-2xl font-bold text-zinc-900">{tour.title}</h2>
-              <p className="text-sm text-zinc-500 mt-1">A quick tour. Skip anytime.</p>
+              <h2 className="text-2xl font-bold text-zinc-900">Welcome to Hiagin</h2>
+              <p className="text-sm text-zinc-500 mt-1">Stay in touch with the people who matter.</p>
             </div>
-            <ul className="space-y-3">
-              {tour.bullets.map((b, i) => (
+
+            <TourSampleCard />
+
+            <ul className="space-y-2.5">
+              {ONBOARDING_BULLETS.map((b, i) => (
                 <li key={i} className="flex gap-3">
-                  <span className="shrink-0 w-6 h-6 rounded-full bg-zinc-900 text-white text-xs font-bold inline-flex items-center justify-center mt-0.5">
+                  <span className="shrink-0 w-5 h-5 rounded-full bg-zinc-900 text-white text-[10px] font-bold inline-flex items-center justify-center mt-0.5">
                     {i + 1}
                   </span>
                   <span className="text-sm text-zinc-700 leading-relaxed">{b}</span>
                 </li>
               ))}
             </ul>
-            <div className="flex justify-between gap-2 pt-2">
-              <button onClick={onClose} className="px-4 h-11 rounded-xl text-zinc-500 hover:bg-zinc-100 font-semibold transition">
-                Skip
+
+            <div className="flex flex-col gap-2 pt-2">
+              <button onClick={startAddingOne} className="w-full h-12 rounded-xl bg-zinc-900 text-white hover:bg-zinc-800 font-semibold transition active:scale-[0.98] inline-flex items-center justify-center">
+                <Plus className="w-5 h-5 mr-2" />
+                Add my first person
               </button>
-              <button onClick={() => setStep("import")} className="px-5 h-11 rounded-xl bg-zinc-900 text-white hover:bg-zinc-800 font-semibold transition">
-                Next: Add contacts
+              <button onClick={() => setStep("import")} className="w-full h-10 rounded-xl text-zinc-600 hover:bg-zinc-100 font-medium text-sm transition">
+                Or paste a list of people
+              </button>
+              <button onClick={onClose} className="w-full h-9 text-zinc-400 hover:text-zinc-700 font-medium text-xs transition">
+                Skip for now
               </button>
             </div>
           </div>
         ) : (
           <div className="p-6 space-y-5">
             <div>
-              <h2 className="text-2xl font-bold text-zinc-900">Add your people</h2>
-              <p className="text-sm text-zinc-500 mt-1">Paste a quick list or skip and add them one at a time.</p>
+              <h2 className="text-2xl font-bold text-zinc-900">Paste a list of people</h2>
+              <p className="text-sm text-zinc-500 mt-1">Faster than adding one at a time. One person per line.</p>
             </div>
             <div className="space-y-2">
               <div className="text-xs text-zinc-500 font-medium">Format: <span className="font-mono">Name, cadence, tags</span></div>
@@ -1052,7 +1064,25 @@ export default function App() {
   const [authUser, setAuthUser] = useState(null);
   const [syncStatus, setSyncStatus] = useState("idle"); // "idle" | "syncing" | "error"
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [checkedAuth, setCheckedAuth] = useState(!isConnectedMode); // skip the gate if sync is off
   const searchRef = useRef(null);
+  const accountMenuRef = useRef(null);
+
+  // Close account menu when clicking outside it
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const onDown = (e) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(e.target)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [accountMenuOpen]);
 
   // Initial load (or seed)
   useEffect(() => {
@@ -1064,10 +1094,11 @@ export default function App() {
         if (r?.value) loaded = JSON.parse(r.value);
       } catch { /* missing key — seed */ }
 
-      if (!Array.isArray(loaded) || loaded.length === 0) {
-        loaded = makeSeed();
-        try { await window.storage.set(STORAGE_KEY, JSON.stringify(loaded)); } catch {}
-      }
+      if (!Array.isArray(loaded)) loaded = [];
+      // Note: we deliberately do NOT seed demo contacts for new users.
+      // The OnboardingDialog + empty-state UX guide them to add their own.
+      // Auto-seeding caused fake contacts to be uploaded to user accounts
+      // on first sign-in, which was confusing and polluted their data.
 
       // Check if starter list import has been done
       let imported = false;
@@ -1124,6 +1155,8 @@ export default function App() {
         } catch (e) {
           console.warn("Initial sync failed:", e);
           if (mounted) setSyncStatus("error");
+        } finally {
+          if (mounted) setCheckedAuth(true);
         }
       }
     })();
@@ -1134,8 +1167,19 @@ export default function App() {
   useEffect(() => {
     if (!isConnectedMode) return;
     const unsub = onAuthChange(async (user) => {
+      const prevUser = authUser;
       setAuthUser(user);
       if (user) {
+        // If signing in as a different user than before, wipe local data
+        // so it doesn't get cross-pollinated into the new account.
+        if (prevUser && prevUser.id !== user.id) {
+          try {
+            await window.storage.set(STORAGE_KEY, JSON.stringify([]));
+            await window.storage.set(INTERACTIONS_KEY, JSON.stringify([]));
+            setContacts([]);
+            setInteractions([]);
+          } catch (e) { console.warn("Failed to clear local data on user switch", e); }
+        }
         setSyncStatus("syncing");
         try {
           const merged = await syncBoth();
@@ -1147,10 +1191,19 @@ export default function App() {
         } catch {
           setSyncStatus("error");
         }
+      } else {
+        // Signed out: clear local data so the next user (or attacker) can't see it
+        try {
+          await window.storage.set(STORAGE_KEY, JSON.stringify([]));
+          await window.storage.set(INTERACTIONS_KEY, JSON.stringify([]));
+          setContacts([]);
+          setInteractions([]);
+        } catch (e) { console.warn("Failed to clear local data on sign out", e); }
+        clearAppBadge();
       }
     });
     return unsub;
-  }, []);
+  }, [authUser]);
 
   const enableNotifications = async () => {
     if (typeof Notification === "undefined") {
@@ -1392,6 +1445,19 @@ export default function App() {
   const hasFilters = !!search || selectedTags.length > 0 || !!heatFilter;
   const loading = contacts === null;
 
+  // GATE: in connected mode, require sign-in. Show a tiny loading state
+  // while we check, then either the landing or the app.
+  if (isConnectedMode && !checkedAuth) {
+    return (
+      <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
+        <Loader2 className="w-6 h-6 animate-spin text-zinc-400" />
+      </div>
+    );
+  }
+  if (isConnectedMode && !authUser) {
+    return <LandingSignIn />;
+  }
+
   return (
     <div className="min-h-screen bg-zinc-50 pb-20 font-sans text-zinc-900" style={{ fontFamily: "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" }}>
       <header className="sticky top-0 z-30 bg-zinc-50/80 backdrop-blur-xl border-b border-zinc-200">
@@ -1408,21 +1474,28 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2 sm:w-auto w-full">
               {isConnectedMode && (
-                <div className="relative shrink-0">
+                <div ref={accountMenuRef} className="relative shrink-0">
                   <button
                     onClick={() => {
                       if (authUser) setAccountMenuOpen((o) => !o);
                       else setAuthOpen(true);
                     }}
                     className={`h-11 w-11 rounded-full inline-flex items-center justify-center shadow-md transition active:scale-[0.98] ${
-                      authUser
+                      syncStatus === "error" && authUser
+                        ? "bg-amber-500 text-white hover:bg-amber-600"
+                        : authUser
                         ? "bg-zinc-900 text-white hover:bg-zinc-800"
                         : "bg-white text-zinc-700 border border-zinc-300 hover:bg-zinc-50"
                     }`}
-                    title={authUser ? `Signed in as ${authUser.email}` : "Sign in to sync"}
+                    title={
+                      syncStatus === "error" && authUser ? "Sync failed — tap to retry"
+                      : authUser ? `Signed in as ${authUser.email}`
+                      : "Sign in to sync"
+                    }
                     aria-label="Account"
                   >
                     {syncStatus === "syncing" ? <Loader2 className="w-5 h-5 animate-spin" />
+                      : syncStatus === "error" && authUser ? <AlertCircle className="w-5 h-5" />
                       : authUser ? <Cloud className="w-5 h-5" />
                       : <CloudOff className="w-5 h-5" />}
                   </button>
@@ -1495,6 +1568,7 @@ export default function App() {
             />
           </div>
 
+          {stats.total > 0 && (
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
             <button
               onClick={() => setHeatFilter(null)}
@@ -1520,6 +1594,7 @@ export default function App() {
               );
             })}
           </div>
+          )}
 
           <AnimatePresence>
             {!importDone && contacts !== null && (
@@ -1530,8 +1605,8 @@ export default function App() {
                 onClick={() => setOnboardingOpen(true)}
                 className="w-full px-4 py-3 rounded-xl bg-zinc-900 text-white font-semibold hover:bg-zinc-800 inline-flex items-center justify-center gap-2 transition active:scale-[0.98] shadow-md"
               >
-                <Activity className="w-4 h-4" />
-                First-time setup (optional)
+                Get started
+                <ArrowRight className="w-4 h-4" />
               </motion.button>
             )}
           </AnimatePresence>
@@ -1577,23 +1652,32 @@ export default function App() {
               </button>
             </div>
           ) : (
-          <div className="bg-white border border-dashed border-zinc-300 rounded-3xl p-12 text-center flex flex-col items-center justify-center shadow-sm">
-            <div className="w-20 h-20 bg-zinc-100 rounded-full flex items-center justify-center mb-4">
-              <Users className="w-10 h-10 text-zinc-400" />
+          <div className="bg-white border border-dashed border-zinc-300 rounded-3xl p-10 text-center flex flex-col items-center justify-center shadow-sm">
+            <div className="w-20 h-20 bg-gradient-to-br from-amber-100 to-rose-100 rounded-full flex items-center justify-center mb-4">
+              <Users className="w-10 h-10 text-zinc-600" />
             </div>
-            <h3 className="text-xl font-bold text-zinc-900">{hasFilters ? "No matches" : "No contacts yet"}</h3>
+            <h3 className="text-xl font-bold text-zinc-900">{hasFilters ? "No matches" : "Welcome to Hiagin"}</h3>
             <p className="text-zinc-500 mt-2 mb-6 max-w-md mx-auto">
-              {hasFilters ? "We couldn't find any contacts matching your filters." : "Add the people you want to keep in touch with."}
+              {hasFilters
+                ? "We couldn't find any contacts matching your filters."
+                : "Hiagin helps you stay in touch with the people who matter — gently nudging you when it's been a while."}
             </p>
             {hasFilters ? (
               <button onClick={() => { setSearch(""); setSelectedTags([]); setHeatFilter(null); }} className="px-4 h-11 rounded-xl border border-zinc-300 hover:bg-zinc-50 font-semibold transition">
                 Clear filters
               </button>
             ) : (
-              <button onClick={() => { setEditing(null); setFormOpen(true); }} className="px-5 h-12 rounded-full bg-zinc-900 text-white hover:bg-zinc-800 font-semibold inline-flex items-center transition">
-                <Plus className="w-5 h-5 mr-2" />
-                Add your first contact
-              </button>
+              <div className="flex flex-col gap-2 w-full max-w-xs">
+                <button onClick={() => { setEditing(null); setFormOpen(true); }} className="px-5 h-12 rounded-full bg-zinc-900 text-white hover:bg-zinc-800 font-semibold inline-flex items-center justify-center transition">
+                  <Plus className="w-5 h-5 mr-2" />
+                  Add my first person
+                </button>
+                {!importDone && (
+                  <button onClick={() => setOnboardingOpen(true)} className="px-5 h-11 rounded-full text-zinc-600 hover:bg-zinc-100 font-medium text-sm transition">
+                    Take the tour first
+                  </button>
+                )}
+              </div>
             )}
           </div>
           )
@@ -1715,6 +1799,7 @@ export default function App() {
         open={onboardingOpen}
         onClose={handleOnboardingClose}
         onImport={handleImport}
+        onAddFirstContact={() => { setEditing(null); setFormOpen(true); }}
         contactsCount={contacts?.length || 0}
       />
 
