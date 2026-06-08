@@ -81,6 +81,40 @@ export async function signInWithEmail(email) {
   return true;
 }
 
+// Password sign-in. Throws on bad credentials or unconfirmed email.
+export async function signInWithPassword(email, password) {
+  const supabase = await getSupabase();
+  if (!supabase) throw new Error("Connected mode not configured");
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  return data.user;
+}
+
+// Password sign-up. Supabase may require email confirmation depending on
+// project settings. Returns user (possibly with unconfirmed email).
+export async function signUpWithPassword(email, password) {
+  const supabase = await getSupabase();
+  if (!supabase) throw new Error("Connected mode not configured");
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { emailRedirectTo: window.location.origin },
+  });
+  if (error) throw error;
+  return data;
+}
+
+// Password reset email.
+export async function sendPasswordReset(email) {
+  const supabase = await getSupabase();
+  if (!supabase) throw new Error("Connected mode not configured");
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin,
+  });
+  if (error) throw error;
+  return true;
+}
+
 export async function signOut() {
   const supabase = await getSupabase();
   if (!supabase) return;
