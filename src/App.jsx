@@ -1551,9 +1551,9 @@ export default function App() {
                           }
                           try {
                             new Notification("Hiagin test", {
-                              body: "Notifications are working on this device.",
+                              body: `Notifications are working on this device. (${new Date().toLocaleTimeString()})`,
                               icon: "/icon-192.png",
-                              tag: "hiagin-test",
+                              tag: `hiagin-test-${Date.now()}`,
                             });
                           } catch (e) {
                             alert("Couldn't fire a notification: " + (e?.message || e));
