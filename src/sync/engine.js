@@ -104,6 +104,17 @@ export async function signUpWithPassword(email, password) {
   return data;
 }
 
+// Complete a password reset (or change): sets a new password on the
+// currently signed-in user. Used by the recovery screen after the user
+// taps the reset link in their email.
+export async function updatePassword(newPassword) {
+  const supabase = await getSupabase();
+  if (!supabase) throw new Error("Connected mode not configured");
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw error;
+  return true;
+}
+
 // Password reset email.
 export async function sendPasswordReset(email) {
   const supabase = await getSupabase();

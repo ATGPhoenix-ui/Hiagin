@@ -5,6 +5,7 @@ import { isConnectedMode } from "./sync/supabase";
 import { getCurrentUser, onAuthChange, signOut as syncSignOut, syncBoth, pull as syncPull, notifyMutated, notifyDeleted } from "./sync/engine";
 import { AuthDialog } from "./components/AuthDialog";
 import { LandingSignIn } from "./components/LandingSignIn";
+import { SetNewPassword } from "./components/SetNewPassword";
 
 // Storage shim: in Claude artifacts, window.storage is provided. In a standalone
 // deployment (PWA, web), fall back to localStorage with the same async API.
@@ -1065,8 +1066,10 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState("idle"); // "idle" | "syncing" | "error"
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [checkedAuth, setCheckedAuth] = useState(!isConnectedMode); // skip the gate if sync is off
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   const searchRef = useRef(null);
   const accountMenuRef = useRef(null);
+  const authUserRef = useRef(null);
 
   // Close account menu when clicking outside it
   useEffect(() => {
@@ -1142,6 +1145,7 @@ export default function App() {
       if (isConnectedMode) {
         try {
           const u = await getCurrentUser();
+          authUserRef.current = u;
           if (mounted) setAuthUser(u);
           if (u) {
             setSyncStatus("syncing");
@@ -1164,11 +1168,24 @@ export default function App() {
   }, []);
 
   // Subscribe to auth state changes (sign in / sign out from another tab, etc.)
+  // Subscribed ONCE. We track the previous user in a ref — using authUser as an
+  // effect dependency caused an infinite resubscribe/sync loop (every new
+  // subscription fires an immediate auth event → setAuthUser → resubscribe...).
   useEffect(() => {
     if (!isConnectedMode) return;
-    const unsub = onAuthChange(async (user) => {
-      const prevUser = authUser;
+    const unsub = onAuthChange(async (user, event) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setPasswordRecovery(true);
+      }
+      // Session keep-alives don't change who's signed in — ignore them.
+      if (event === "TOKEN_REFRESHED") return;
+
+      const prevUser = authUserRef.current;
+      const changed = (prevUser?.id || null) !== (user?.id || null);
+      authUserRef.current = user;
+      if (!changed) return;
       setAuthUser(user);
+
       if (user) {
         // If signing in as a different user than before, wipe local data
         // so it doesn't get cross-pollinated into the new account.
@@ -1203,7 +1220,7 @@ export default function App() {
       }
     });
     return unsub;
-  }, [authUser]);
+  }, []);
 
   const enableNotifications = async () => {
     if (typeof Notification === "undefined") {
@@ -1447,6 +1464,9 @@ export default function App() {
 
   // GATE: in connected mode, require sign-in. Show a tiny loading state
   // while we check, then either the landing or the app.
+  if (isConnectedMode && passwordRecovery) {
+    return <SetNewPassword onDone={() => setPasswordRecovery(false)} />;
+  }
   if (isConnectedMode && !checkedAuth) {
     return (
       <div className="min-h-screen bg-zinc-50 flex items-center justify-center">
@@ -1517,6 +1537,31 @@ export default function App() {
                         className="w-full text-left px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 inline-flex items-center gap-2"
                       >
                         <Cloud className="w-4 h-4" /> Sync now
+                      </button>
+                      <button
+                        onClick={() => {
+                          setAccountMenuOpen(false);
+                          if (typeof Notification === "undefined") {
+                            alert("Notifications aren't supported in this browser context.");
+                            return;
+                          }
+                          if (Notification.permission !== "granted") {
+                            alert("Turn on notifications first (the bell icon), then try again.");
+                            return;
+                          }
+                          try {
+                            new Notification("Hiagin test", {
+                              body: "Notifications are working on this device.",
+                              icon: "/icon-192.png",
+                              tag: "hiagin-test",
+                            });
+                          } catch (e) {
+                            alert("Couldn't fire a notification: " + (e?.message || e));
+                          }
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm text-zinc-700 hover:bg-zinc-100 inline-flex items-center gap-2"
+                      >
+                        <Bell className="w-4 h-4" /> Test notification
                       </button>
                       <button
                         onClick={async () => {
