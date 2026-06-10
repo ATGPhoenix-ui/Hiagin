@@ -1,8 +1,8 @@
-// Hiagin service worker — v2
+// Hiagin service worker — v3
 // Strategy: network-first for EVERYTHING, cache only as offline fallback.
 // New deployments take over automatically: skipWaiting + clients.claim +
 // versioned cache that's purged on activate.
-const CACHE = "hiagin-v2";
+const CACHE = "hiagin-v3";
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -17,6 +17,40 @@ self.addEventListener("activate", (event) => {
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
+  );
+});
+
+// Push notification handler — fires when a push arrives from the server,
+// even if the app is closed. Payload JSON: { title, body, url }.
+self.addEventListener("push", (event) => {
+  let data = { title: "Hiagin", body: "You have overdue contacts.", url: "/" };
+  try {
+    if (event.data) data = { ...data, ...event.data.json() };
+  } catch {}
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      tag: "hiagin-overdue",
+      renotify: false,
+      data: { url: data.url },
+    })
+  );
+});
+
+// Open (or focus) the app when the user taps a push notification.
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || "/";
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clients) => {
+        const existing = clients.find((c) => c.url.startsWith(self.location.origin));
+        if (existing) return existing.focus();
+        return self.clients.openWindow(url);
+      })
   );
 });
 

@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Search, Activity, Users, Pencil, Trash2, X, CalendarCheck2, Loader2, Phone, MessageSquare, Mail, Coffee, Send, MoreHorizontal, ArrowLeft, ArrowRight, Undo2, ArrowUpDown, ChevronDown, Bell, BellOff, User, LogOut, Cloud, CloudOff, AlertCircle } from "lucide-react";
 import { isConnectedMode } from "./sync/supabase";
 import { getCurrentUser, onAuthChange, signOut as syncSignOut, syncBoth, pull as syncPull, notifyMutated, notifyDeleted } from "./sync/engine";
+import { isPushConfigured, subscribeToPush, unsubscribeFromPush, isSubscribed } from "./sync/push";
 import { AuthDialog } from "./components/AuthDialog";
 import { LandingSignIn } from "./components/LandingSignIn";
 import { SetNewPassword } from "./components/SetNewPassword";
@@ -1137,8 +1138,11 @@ export default function App() {
         setInteractions(Array.isArray(loadedInteractions) ? loadedInteractions : []);
         setCollapsedCategories(new Set(Array.isArray(loadedCollapsed) ? loadedCollapsed : []));
         setNotifyEnabled(notifyOn && typeof Notification !== "undefined" && Notification.permission === "granted");
-        // Fire daily notification on app open
-        if (notifyOn) maybeNotifyOverdue(loaded);
+        // Fire daily notification on app open — but only when this device has
+        // no server-side push subscription. Push replaces on-open checks.
+        if (notifyOn) {
+          isSubscribed().then((subbed) => { if (!subbed) maybeNotifyOverdue(loaded); });
+        }
       }
 
       // Auth + initial sync (no-op if not in connected mode)
@@ -1155,6 +1159,11 @@ export default function App() {
               setInteractions(merged.interactions);
             }
             if (mounted) setSyncStatus("idle");
+            // Refresh this device's push subscription row (idempotent upsert)
+            // so the server can keep reaching us after endpoint rotation.
+            if (notifyOn && typeof Notification !== "undefined" && Notification.permission === "granted") {
+              subscribeToPush(u.id).catch((e) => console.warn("Push resubscribe failed:", e));
+            }
           }
         } catch (e) {
           console.warn("Initial sync failed:", e);
@@ -1217,6 +1226,10 @@ export default function App() {
           setInteractions([]);
         } catch (e) { console.warn("Failed to clear local data on sign out", e); }
         clearAppBadge();
+        // Drop the browser-side push subscription so this device stops
+        // receiving pushes for the signed-out account. (Server row can't be
+        // deleted post-signout — RLS — the Edge Function prunes dead endpoints.)
+        unsubscribeFromPush(null).catch(() => {});
       }
     });
     return unsub;
@@ -1237,14 +1250,31 @@ export default function App() {
     }
     await window.storage.set(NOTIFY_KEY, "1");
     setNotifyEnabled(true);
-    // Fire one immediately so they see it works
-    if (contacts) await maybeNotifyOverdue(contacts);
+
+    // Signed in + push configured: register this device for server-side push.
+    // Pushes land with the app closed and replace the on-open check.
+    let pushed = null;
+    if (isPushConfigured && authUser) {
+      try {
+        pushed = await subscribeToPush(authUser.id);
+      } catch (e) {
+        console.warn("Push subscription failed, falling back to on-open notifications:", e);
+      }
+    }
+    // No push (offline mode, not signed in, or subscribe failed): fire the
+    // local on-open notification once so they see it works.
+    if (!pushed && contacts) await maybeNotifyOverdue(contacts);
   };
 
   const disableNotifications = async () => {
     await window.storage.set(NOTIFY_KEY, "0");
     setNotifyEnabled(false);
     clearAppBadge();
+    try {
+      await unsubscribeFromPush(authUser?.id);
+    } catch (e) {
+      console.warn("Push unsubscribe failed:", e);
+    }
   };
 
   const toggleCategory = useCallback(async (cat) => {
