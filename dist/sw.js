@@ -1,8 +1,8 @@
-// Hiagin service worker — v3
+// Hiagin service worker — v4
 // Strategy: network-first for EVERYTHING, cache only as offline fallback.
 // New deployments take over automatically: skipWaiting + clients.claim +
 // versioned cache that's purged on activate.
-const CACHE = "hiagin-v3";
+const CACHE = "hiagin-v4";
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -57,6 +57,10 @@ self.addEventListener("notificationclick", (event) => {
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   if (req.method !== "GET") return;
+  // Same-origin only: never cache API responses (Supabase) — they contain
+  // user data and Cache Storage survives sign-out, unlike localStorage
+  // which the app clears.
+  if (new URL(req.url).origin !== self.location.origin) return;
   event.respondWith(
     fetch(req, { cache: "no-cache" })
       .then((res) => {

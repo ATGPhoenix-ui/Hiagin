@@ -88,11 +88,21 @@ function buildMessage(overdue: ReturnType<typeof overdueContacts>) {
 
 Deno.serve(async (req) => {
   // Optional manual-test override: { "force": true } sends regardless of
-  // hour/dedupe. The cron sends an empty body.
+  // hour/dedupe. Only honored with the service-role key — the anon key is
+  // public (ships in the client bundle), so an anon caller must not be able
+  // to bypass the once-per-day dedupe and spam devices. The cron sends an
+  // empty body and runs the normal gated path.
   let force = false;
   try {
     const body = await req.json();
-    force = body?.force === true;
+    if (body?.force === true) {
+      const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "");
+      if (bearer === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) {
+        force = true;
+      } else {
+        return Response.json({ error: "force requires service role" }, { status: 403 });
+      }
+    }
   } catch { /* empty body */ }
 
   const now = new Date();
