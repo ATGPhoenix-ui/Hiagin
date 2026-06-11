@@ -1,8 +1,8 @@
-// Hiagin service worker — v4
+// Hiagin service worker — v5
 // Strategy: network-first for EVERYTHING, cache only as offline fallback.
 // New deployments take over automatically: skipWaiting + clients.claim +
 // versioned cache that's purged on activate.
-const CACHE = "hiagin-v4";
+const CACHE = "hiagin-v5";
 const APP_SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {

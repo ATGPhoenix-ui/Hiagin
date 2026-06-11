@@ -1,9 +1,9 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Search, Activity, Users, Pencil, Trash2, X, CalendarCheck2, Loader2, Phone, MessageSquare, Mail, Coffee, Send, MoreHorizontal, ArrowLeft, ArrowRight, Undo2, ArrowUpDown, ChevronDown, Bell, BellOff, User, LogOut, Cloud, CloudOff, AlertCircle } from "lucide-react";
+import { Plus, Search, Activity, Users, Pencil, Trash2, X, CalendarCheck2, Loader2, Phone, MessageSquare, Mail, Coffee, Send, MoreHorizontal, ArrowLeft, ArrowRight, Undo2, ArrowUpDown, ChevronDown, Bell, BellOff, User, LogOut, Cloud, CloudOff, AlertCircle, Settings } from "lucide-react";
 import { isConnectedMode } from "./sync/supabase";
 import { getCurrentUser, onAuthChange, signOut as syncSignOut, syncBoth, pull as syncPull, notifyMutated, notifyDeleted } from "./sync/engine";
-import { isPushConfigured, subscribeToPush, unsubscribeFromPush, isSubscribed } from "./sync/push";
+import { isPushConfigured, subscribeToPush, unsubscribeFromPush, isSubscribed, getDeviceNotifyHour, setDeviceNotifyHour } from "./sync/push";
 import { AuthDialog } from "./components/AuthDialog";
 import { LandingSignIn } from "./components/LandingSignIn";
 import { SetNewPassword } from "./components/SetNewPassword";
@@ -1042,6 +1042,128 @@ function OnboardingDialog({ open, onClose, onAddFirstContact, onImport, contacts
   );
 }
 
+function SettingsDialog({ open, onClose, authUser, notifyEnabled, onEnableNotifications, onDisableNotifications, onSignOut }) {
+  const [hour, setHour] = useState(null); // null = no active push subscription on this device
+  const [hourLoading, setHourLoading] = useState(false);
+  const [hourSaved, setHourSaved] = useState(false);
+  const mouseDownOnBackdrop = useRef(false);
+
+  useEffect(() => {
+    if (!open) return;
+    let mounted = true;
+    setHourLoading(true);
+    setHourSaved(false);
+    (async () => {
+      const h = await getDeviceNotifyHour();
+      if (mounted) { setHour(h); setHourLoading(false); }
+    })();
+    return () => { mounted = false; };
+  }, [open, notifyEnabled]);
+
+  if (!open) return null;
+
+  const hourLabel = (h) => {
+    const display = h % 12 === 0 ? 12 : h % 12;
+    return `${display}:00 ${h < 12 ? "AM" : "PM"}`;
+  };
+
+  const changeHour = async (h) => {
+    setHour(h);
+    setHourSaved(false);
+    const ok = await setDeviceNotifyHour(h);
+    if (ok) {
+      setHourSaved(true);
+      setTimeout(() => setHourSaved(false), 2000);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
+      onMouseDown={(e) => { mouseDownOnBackdrop.current = e.target === e.currentTarget; }}
+      onClick={(e) => { if (e.target === e.currentTarget && mouseDownOnBackdrop.current) onClose(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="p-6 space-y-6">
+          <div className="flex items-start justify-between">
+            <h2 className="text-xl font-bold text-zinc-900">Settings</h2>
+            <button onClick={onClose} className="text-zinc-400 hover:text-zinc-700 p-1 -mr-1 -mt-1" aria-label="Close">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Notifications</h3>
+            <div className="flex items-center justify-between rounded-xl border border-zinc-200 p-4">
+              <div>
+                <div className="text-sm font-semibold text-zinc-900">Overdue reminders</div>
+                <div className="text-xs text-zinc-500 mt-0.5">
+                  {notifyEnabled ? "On for this device" : "Off"}
+                </div>
+              </div>
+              <button
+                onClick={notifyEnabled ? onDisableNotifications : onEnableNotifications}
+                className={`px-4 h-10 rounded-xl font-semibold text-sm transition ${
+                  notifyEnabled
+                    ? "border border-zinc-300 bg-white hover:bg-zinc-50 text-zinc-700"
+                    : "bg-zinc-900 text-white hover:bg-zinc-800"
+                }`}
+              >
+                {notifyEnabled ? "Turn off" : "Turn on"}
+              </button>
+            </div>
+
+            {notifyEnabled && !hourLoading && hour !== null && (
+              <div className="rounded-xl border border-zinc-200 p-4 space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-sm font-semibold text-zinc-900">Daily reminder time</label>
+                  {hourSaved && <span className="text-xs font-medium text-emerald-600">Saved</span>}
+                </div>
+                <select
+                  value={hour}
+                  onChange={(e) => changeHour(Number(e.target.value))}
+                  className="w-full h-11 px-3 rounded-md border border-zinc-300 focus:ring-2 focus:ring-zinc-900 focus:outline-none text-sm bg-white"
+                >
+                  {Array.from({ length: 24 }, (_, h) => (
+                    <option key={h} value={h}>{hourLabel(h)}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-zinc-500">
+                  When this device gets its overdue reminder. Set per device.
+                </p>
+              </div>
+            )}
+            {notifyEnabled && !hourLoading && hour === null && isConnectedMode && (
+              <p className="text-xs text-zinc-500 px-1">
+                Reminders on this device fire when you open the app. For lock-screen
+                reminders at a set time, turn notifications off and on again while signed in.
+              </p>
+            )}
+          </div>
+
+          {isConnectedMode && authUser && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500">Account</h3>
+              <div className="rounded-xl border border-zinc-200 p-4 space-y-3">
+                <div>
+                  <div className="text-xs text-zinc-500">Signed in as</div>
+                  <div className="text-sm font-semibold text-zinc-900 truncate">{authUser.email}</div>
+                </div>
+                <button
+                  onClick={onSignOut}
+                  className="w-full h-10 rounded-xl border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-sm inline-flex items-center justify-center gap-2 transition"
+                >
+                  <LogOut className="w-4 h-4" /> Sign out
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ----- App -----
 
 export default function App() {
@@ -1062,6 +1184,7 @@ export default function App() {
   const [collapsedCategories, setCollapsedCategories] = useState(new Set());
   const [notifyEnabled, setNotifyEnabled] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [authUser, setAuthUser] = useState(null);
   const [syncStatus, setSyncStatus] = useState("idle"); // "idle" | "syncing" | "error"
@@ -1550,7 +1673,7 @@ export default function App() {
                       : <CloudOff className="w-5 h-5" />}
                   </button>
                   {accountMenuOpen && authUser && (
-                    <div className="absolute right-0 mt-2 w-56 bg-white border border-zinc-200 rounded-xl shadow-2xl py-1 z-30">
+                    <div className="absolute left-0 sm:left-auto sm:right-0 mt-2 w-56 bg-white border border-zinc-200 rounded-xl shadow-2xl py-1 z-30">
                       <div className="px-3 py-2 text-xs text-zinc-500 border-b border-zinc-100 truncate">
                         {authUser.email}
                       </div>
@@ -1617,6 +1740,14 @@ export default function App() {
                 aria-label="Toggle notifications"
               >
                 {notifyEnabled ? <Bell className="w-5 h-5" /> : <BellOff className="w-5 h-5" />}
+              </button>
+              <button
+                onClick={() => setSettingsOpen(true)}
+                className="h-11 w-11 rounded-full inline-flex items-center justify-center shadow-md transition active:scale-[0.98] shrink-0 bg-white text-zinc-700 border border-zinc-300 hover:bg-zinc-50"
+                title="Settings"
+                aria-label="Settings"
+              >
+                <Settings className="w-5 h-5" />
               </button>
               <button
                 onClick={() => { setEditing(null); setFormOpen(true); }}
@@ -1879,6 +2010,16 @@ export default function App() {
       />
 
       <AuthDialog open={authOpen} onClose={() => setAuthOpen(false)} />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        authUser={authUser}
+        notifyEnabled={notifyEnabled}
+        onEnableNotifications={enableNotifications}
+        onDisableNotifications={disableNotifications}
+        onSignOut={async () => { setSettingsOpen(false); await syncSignOut(); }}
+      />
 
       {/* Undo toast */}
       <AnimatePresence>

@@ -78,6 +78,40 @@ export async function unsubscribeFromPush(userId) {
     .eq("endpoint", endpoint);
 }
 
+// Read this device's daily reminder hour from its subscription row.
+// Returns 0-23, or null when this device has no active push subscription.
+export async function getDeviceNotifyHour() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) return null;
+    const supabase = await getSupabase();
+    if (!supabase) return null;
+    const { data } = await supabase
+      .from("push_subscriptions")
+      .select("notify_hour")
+      .eq("endpoint", sub.endpoint)
+      .maybeSingle();
+    return data?.notify_hour ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setDeviceNotifyHour(hour) {
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (!sub) return false;
+  const supabase = await getSupabase();
+  if (!supabase) return false;
+  const { error } = await supabase
+    .from("push_subscriptions")
+    .update({ notify_hour: hour, updated_at: new Date().toISOString() })
+    .eq("endpoint", sub.endpoint);
+  return !error;
+}
+
 export async function isSubscribed() {
   if (!("serviceWorker" in navigator) || !("PushManager" in window)) return false;
   try {

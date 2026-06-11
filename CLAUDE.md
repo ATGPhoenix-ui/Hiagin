@@ -45,7 +45,8 @@ Live at **hiagin.vercel.app**. Owner: Alex Vera (referred to as Alex; he capital
 
 ## Known outstanding cleanup
 
-- Owner's own Supabase account has stuck demo contacts from the old seeding bug — needs a targeted SQL `DELETE` scoped to his user ID only. Never run unscoped deletes on `public.contacts`. Note (2026-06-10): the account his Android phone signs into had zero contacts before push testing, so the stuck contacts live on a *different* account — confirm which user ID before deleting.
+- ~~Stuck demo contacts from the old seeding bug~~ — RESOLVED: verified 2026-06-10 that no demo contacts exist in the database. The standing rule remains: never run unscoped deletes on `public.contacts`.
+- Owner has multiple accounts with separate data: `alexander.j.vera@gmail.com` (main) and `panuniversalusers@gmail.com` (what his Android phone signs into, holds the push subscription). Contacts do not cross accounts by design — consolidation is his call, pending.
 
 ## Product sensibility
 
