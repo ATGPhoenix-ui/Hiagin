@@ -249,7 +249,6 @@ function todayISO() {
 
 function TagChipInput({ value, onChange, suggestions, placeholder, disabled }) {
   const [input, setInput] = useState("");
-  const [showSuggest, setShowSuggest] = useState(false);
   const inputRef = useRef(null);
 
   const addTag = (raw) => {
@@ -271,7 +270,7 @@ function TagChipInput({ value, onChange, suggestions, placeholder, disabled }) {
 
   const filtered = (suggestions || [])
     .filter((s) => !value.includes(s) && s.toLowerCase().includes(input.toLowerCase()))
-    .slice(0, 6);
+    .slice(0, 12);
 
   return (
     <div className="space-y-2">
@@ -296,30 +295,29 @@ function TagChipInput({ value, onChange, suggestions, placeholder, disabled }) {
           ref={inputRef}
           value={input}
           disabled={disabled}
-          onChange={(e) => { setInput(e.target.value); setShowSuggest(true); }}
-          onFocus={() => setShowSuggest(true)}
+          onChange={(e) => setInput(e.target.value)}
           onBlur={() => setTimeout(() => {
             // Commit any pending text so users don't lose tags by forgetting to press Enter.
             // The 150ms delay lets suggestion clicks fire first via their onMouseDown.
             if (input.trim()) addTag(input);
-            setShowSuggest(false);
           }, 150)}
           onKeyDown={onKeyDown}
           placeholder={value.length === 0 ? placeholder : ""}
           className="flex-1 min-w-[120px] bg-transparent outline-none text-sm"
         />
       </div>
-      {showSuggest && filtered.length > 0 && (
-        <div className="border border-zinc-200 rounded-md bg-white shadow-md p-1 max-h-40 overflow-y-auto">
+      {filtered.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
           {filtered.map((s) => (
             <button
               key={s}
               type="button"
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => addTag(s)}
-              className="w-full text-left px-2 py-1.5 text-sm rounded hover:bg-zinc-100"
+              disabled={disabled}
+              className="text-xs px-2.5 py-1 rounded-full border border-zinc-200 bg-zinc-50 text-zinc-600 hover:border-zinc-400 hover:text-zinc-900 font-medium transition"
             >
-              {s}
+              + {s}
             </button>
           ))}
         </div>
@@ -328,7 +326,7 @@ function TagChipInput({ value, onChange, suggestions, placeholder, disabled }) {
   );
 }
 
-function ContactCard({ contact, onEdit, onMark, onDelete, onLog, onOpenDetail }) {
+function ContactCard({ contact, onEdit, onMark, onDelete, onLog, onOpenDetail, onTagClick }) {
   const { daysSince, heat } = computeHeat(contact.lastContactedDate, contact.cadenceDays);
   const styles = HEAT_STYLES[heat];
   const progress = daysSince === null ? 100 : Math.min(100, (daysSince / contact.cadenceDays) * 100);
@@ -358,9 +356,14 @@ function ContactCard({ contact, onEdit, onMark, onDelete, onLog, onOpenDetail })
           </div>
           <div className="flex flex-wrap gap-1.5 mt-2">
             {contact.tags?.map((tag) => (
-              <span key={tag} className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-700 font-medium">
+              <button
+                key={tag}
+                onClick={stop(() => onTagClick?.(tag))}
+                className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-700 font-medium hover:bg-zinc-200 transition"
+                title={`Filter by "${tag}"`}
+              >
                 {tag}
-              </span>
+              </button>
             ))}
             {(!contact.tags || contact.tags.length === 0) && (
               <span className="text-xs text-zinc-400 italic">{PRIORITIES.find((p) => p.value === contact.priority)?.label || "Important"}</span>
@@ -1460,8 +1463,9 @@ export default function App() {
       const matchTags = selectedTags.length === 0 || selectedTags.every((t) => c.tags?.includes(t));
       const heat = computeHeat(c.lastContactedDate, c.cadenceDays).heat;
       const matchHeat = !heatFilter || heat === heatFilter;
-      // Focus mode hides green/yellow unless a heat filter or search overrides
-      const matchFocus = !focusMode || heatFilter || q || (heat !== "green" && heat !== "yellow");
+      // Focus mode hides green/yellow unless a heat filter, search, or an
+      // explicit tag filter overrides — if you ask for a tag, you see all of it
+      const matchFocus = !focusMode || heatFilter || q || selectedTags.length > 0 || (heat !== "green" && heat !== "yellow");
       return matchSearch && matchTags && matchHeat && matchFocus;
     });
     const sorters = {
@@ -1497,7 +1501,7 @@ export default function App() {
   }, [filtered, sortBy]);
 
   const hiddenCount = useMemo(() => {
-    if (!contacts || !focusMode || heatFilter || search) return 0;
+    if (!contacts || !focusMode || heatFilter || search || selectedTags.length > 0) return 0;
     return contacts.filter((c) => {
       const heat = computeHeat(c.lastContactedDate, c.cadenceDays).heat;
       const matchTags = selectedTags.length === 0 || selectedTags.every((t) => c.tags?.includes(t));
@@ -1817,24 +1821,32 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          <AnimatePresence>
-            {selectedTags.length > 0 && (
-              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium text-zinc-500">Tags:</span>
-                {selectedTags.map((tag) => (
-                  <div key={tag} className="inline-flex items-center gap-1.5 bg-zinc-900 text-white px-3 py-1 rounded-full text-sm font-semibold shadow-sm">
+          {allTags.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-medium text-zinc-500 mr-1">Tags:</span>
+              {allTags.map((tag) => {
+                const active = selectedTags.includes(tag);
+                return (
+                  <button
+                    key={tag}
+                    onClick={() => toggleTag(tag)}
+                    className={`text-xs px-3 py-1.5 rounded-full border font-medium transition ${
+                      active
+                        ? "bg-zinc-900 text-white border-zinc-900 shadow-sm"
+                        : "bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400"
+                    }`}
+                  >
                     {tag}
-                    <button onClick={() => toggleTag(tag)} className="hover:bg-white/20 rounded-full p-0.5">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
-                <button onClick={() => setSelectedTags([])} className="text-xs text-zinc-500 hover:text-zinc-900 underline">
+                  </button>
+                );
+              })}
+              {selectedTags.length > 0 && (
+                <button onClick={() => setSelectedTags([])} className="text-xs text-zinc-500 hover:text-zinc-900 underline ml-1">
                   Clear
                 </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
+              )}
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -1953,6 +1965,7 @@ export default function App() {
                         onDelete={(c) => setConfirmDelete(c)}
                         onLog={(c) => setLogForContact(c)}
                         onOpenDetail={(c) => setDetailContact(c)}
+                        onTagClick={toggleTag}
                       />
                     ))}
                   </AnimatePresence>
