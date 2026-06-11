@@ -33,16 +33,19 @@ Live at **hiagin.vercel.app**. Owner: Alex Vera (referred to as Alex; he capital
 - Sync: RLS-protected tables, last-write-wins merge. Per-user isolation enforced by RLS — never bypass with service_role from the client.
 - Cloud icon in the UI reflects sync state; a "vibrating" cloud icon historically meant the resubscribe loop bug (see Hard Rule 3).
 
-## Push notifications (Chunk 4.5 — in progress)
+## Push notifications (Chunk 4.5 — SHIPPED 2026-06-10, verified end to end)
 
-- Infrastructure exists: `push_subscriptions` table, `push.js` client subscription module, `push-overdue` Edge Function with VAPID keys, cron design (daily at user's notification hour; hourly-with-dedupe is the approved upgrade path).
-- Design intent: pushes fire **server-side on breach detection** so they land with the app closed. They *replace* on-open notification checks, not supplement them.
-- Subscriptions are per-device, tied to account. iOS requires PWA installed to home screen (iOS 16.4+ Web Push).
-- Remaining work: finish wiring the bell-icon subscription flow end to end, verify service-worker push handler renders notifications when app is closed, schedule and test the cron, dedupe logic.
+- Pushes fire **server-side on breach detection** and land with the app closed. A device with an active push subscription skips the on-open local notification (push *replaces* it); offline/signed-out users keep the on-open check.
+- Flow: bell icon → `src/sync/push.js` subscribes via the service worker and upserts endpoint + keys + device tz into `push_subscriptions` (RLS, per-device, unique on user_id+endpoint). Bell off / sign-out unsubscribes the device.
+- Server: `supabase/functions/push-overdue` (Edge Function, secrets `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT`) invoked hourly by pg_cron job `push-overdue-hourly` (at :05). It sends only to devices at their local `notify_hour` (default 9), dedupes to once/day per device via `last_notified_date`, uses the client's orange/red thresholds, and deletes subscription rows on 404/410.
+- Manual test: POST the function with body `{"force": true}` — bypasses hour + dedupe but still requires an orange/red contact.
+- Client needs `VITE_VAPID_PUBLIC_KEY` in Vercel (set, Production). If absent, the bell silently falls back to local on-open notifications. The VAPID private key exists ONLY in Supabase secrets; rotating the pair invalidates every subscription.
+- Schema/cron source of truth: `supabase-push.sql`. iOS requires the PWA installed to home screen (iOS 16.4+); iOS Web Push has no action buttons — tap-to-open only.
+- Follow-ups not yet built: settings UI for notification hour (`notify_hour` column exists, fixed 9am local for now).
 
 ## Known outstanding cleanup
 
-- Owner's own Supabase account has stuck demo contacts from the old seeding bug — needs a targeted SQL `DELETE` scoped to his user ID only. Never run unscoped deletes on `public.contacts`.
+- Owner's own Supabase account has stuck demo contacts from the old seeding bug — needs a targeted SQL `DELETE` scoped to his user ID only. Never run unscoped deletes on `public.contacts`. Note (2026-06-10): the account his Android phone signs into had zero contacts before push testing, so the stuck contacts live on a *different* account — confirm which user ID before deleting.
 
 ## Product sensibility
 
